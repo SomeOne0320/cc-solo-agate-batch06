@@ -1,6 +1,8 @@
 1.14.3 - Unreleased
 -------------------
 
+- feat: :meth:`.Table.join` accepts a ``validate`` argument (``one_to_one``, ``one_to_many``, ``many_to_one`` or ``many_to_many``) to validate that the join keys satisfy the expected relationship before generating rows. See :doc:`cookbook/join_validate`.
+
 - feat: :class:`.Median`, :class:`.Percentiles`, :class:`.Quartiles`, :class:`.Quintiles`, :class:`.Deciles` and :class:`.IQR` can be applied to :class:`.TimeDelta` columns, like :class:`.Sum` and :class:`.Mean`.
 - fix: :meth:`.Table.distinct` now deduplicates rows when ``key`` is a sequence of column names.
 - fix: :class:`.Rank` ranks null values last when ``reverse=True``.

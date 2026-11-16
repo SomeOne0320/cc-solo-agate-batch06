@@ -1,9 +1,60 @@
 from agate import utils
 from agate.rows import Row
 
+_VALIDATE_OPTIONS = ('one_to_one', 'one_to_many', 'many_to_one', 'many_to_many')
+
+
+def _duplicate_values(values):
+    """
+    Return the values that occur more than once, in the order they are first
+    duplicated.
+    """
+    seen = set()
+    duplicates = []
+    duplicate_set = set()
+
+    for value in values:
+        if value in seen:
+            if value not in duplicate_set:
+                duplicate_set.add(value)
+                duplicates.append(value)
+        else:
+            seen.add(value)
+
+    return duplicates
+
+
+def _validate_join(left_data, right_data, validate):
+    """
+    Check that the join keys satisfy the requested relationship.
+
+    Validation applies to every row of both input tables, not only to the rows
+    that end up with a match. The key data has already been computed by
+    :meth:`.Table.join`, so key functions are never called a second time.
+    """
+    check_left = validate in ('one_to_one', 'one_to_many')
+    check_right = validate in ('one_to_one', 'many_to_one')
+
+    failures = []
+
+    if check_left:
+        duplicates = _duplicate_values(left_data)
+
+        if duplicates:
+            failures.append('the left key contains duplicate values (for example, %r)' % (duplicates[0],))
+
+    if check_right:
+        duplicates = _duplicate_values(right_data)
+
+        if duplicates:
+            failures.append('the right key contains duplicate values (for example, %r)' % (duplicates[0],))
+
+    if failures:
+        raise ValueError('Join validation "%s" failed: %s.' % (validate, '; '.join(failures)))
+
 
 def join(self, right_table, left_key=None, right_key=None, inner=False, full_outer=False, require_match=False,
-         columns=None):
+         columns=None, validate=None):
     """
     Create a new table by joining two table's on common values. This method
     implements most varieties of SQL join, in addition to some unique features.
@@ -43,6 +94,20 @@ def join(self, right_table, left_key=None, right_key=None, inner=False, full_out
     A subset of columns from the right-hand table can be included in the joined
     table using the :code:`columns` argument.
 
+    The :code:`validate` argument checks the relationship between the join
+    keys before the result is generated. It may be one of:
+
+    * :code:`one_to_one`: both keys must be unique.
+    * :code:`one_to_many`: the left key must be unique; the right key may repeat.
+    * :code:`many_to_one`: the right key must be unique; the left key may repeat.
+    * :code:`many_to_many`: neither key is required to be unique.
+
+    The check is applied to the entire input tables, regardless of whether a
+    key value is matched, and regardless of :code:`inner`, :code:`full_outer`
+    or :code:`require_match`. A duplicate key raises a :exc:`ValueError`.
+    Permitting duplicates does not deduplicate the output: all matching rows
+    are still joined. By default, no validation is performed.
+
     :param right_table:
         The "right" table to join to.
     :param left_key:
@@ -70,11 +135,20 @@ def join(self, right_table, left_key=None, right_key=None, inner=False, full_out
         A sequence of column names from :code:`right_table` to include in
         the final output table. Defaults to all columns not in
         :code:`right_key`. Ignored when :code:`full_outer` is :code:`True`.
+    :param validate:
+        One of :code:`one_to_one`, :code:`one_to_many`, :code:`many_to_one` or
+        :code:`many_to_many`, to require that the join keys satisfy that
+        relationship. By default, no validation is performed.
     :returns:
         A new :class:`.Table`.
     """
     if inner and full_outer:
         raise ValueError('A join can not be both "inner" and "full_outer".')
+
+    if validate is not None and validate not in _VALIDATE_OPTIONS:
+        raise ValueError(
+            'Join validation must be one of: %s. Not: %r.' % (', '.join(_VALIDATE_OPTIONS), validate)
+        )
 
     if right_key is None:
         right_key = left_key
@@ -118,6 +192,11 @@ def join(self, right_table, left_key=None, right_key=None, inner=False, full_out
         right_column = right_table._columns[right_key]
         right_data = right_column.values()
         right_key_indices = [right_column.index]
+
+    # Validate the relationship between the join keys before producing rows.
+    # This uses the key data already computed above, so key functions run once.
+    if validate is not None:
+        _validate_join(left_data, right_data, validate)
 
     # Build names and type lists
     column_names = list(self._column_names)
