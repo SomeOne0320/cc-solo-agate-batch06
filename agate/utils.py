@@ -18,21 +18,38 @@ from agate.warns import warn_duplicate_column, warn_unnamed_column
 #: Sentinal for use when `None` is an valid argument value
 default = object()
 
+#: Sentinel used to mark a memoized result that has not been computed yet.
+#: Unlike ``None`` this never collides with a legitimate empty result (an
+#: empty tuple, list or OrderedDict), so memoized values are only prepared
+#: once per object, even when they turn out to be empty.
+_missing = object()
+
 
 def memoize(func):
     """
-    Dead-simple memoize decorator for instance methods that take no arguments.
+    Memoize a no-argument instance method on the object that owns it.
 
-    This is especially useful since so many of our classes are immutable.
+    The cached value is stored in a private per-instance slot (see
+    :attr:`agate.mapped_sequence.MappedSequence.__slots__` and
+    :attr:`agate.columns.Column.__slots__`), so it shares the lifecycle of a
+    single row, column or table. It is never kept in a module-level cache and
+    therefore does not outlive the objects it belongs to. A separate sentinel
+    distinguishes "not prepared yet" from a valid empty result, so empty
+    columns are not recomputed on every read.
     """
-    memo = None
+    attr_name = '_memo_%s' % func.__name__
 
     @wraps(func)
     def wrapper(self):
-        if memo is not None:
-            return memo
+        value = getattr(self, attr_name)
 
-        return func(self)
+        if value is not _missing:
+            return value
+
+        value = func(self)
+        setattr(self, attr_name, value)
+
+        return value
 
     return wrapper
 

@@ -1,11 +1,13 @@
 import warnings
 from decimal import Decimal
 
+import agate
 from agate import Table
 from agate.computations import Formula
 from agate.data_types import Number, Text
 from agate.exceptions import CastError
 from agate.testcase import AgateTestCase
+from agate.utils import _missing
 from agate.warns import DuplicateColumnWarning
 
 
@@ -681,3 +683,93 @@ class TestData(AgateTestCase):
         self.assertIsNot(table2.rows[0], table3.rows[0])
         self.assertNotEqual(table2.rows[0], table3.rows[0])
         self.assertSequenceEqual(table.rows[0], (1, 4, 'a'))
+
+
+class TestLazyReuse(AgateTestCase):
+    def setUp(self):
+        self.rows = (
+            (1, 4, 'a'),
+            (2, 3, 'b'),
+            (None, 2, 'c')
+        )
+        self.column_names = ['one', 'two', 'three']
+        self.column_types = [Number(), Number(), Text()]
+
+    def test_nothing_is_prepared_at_construction(self):
+        table = Table(self.rows, self.column_names, self.column_types)
+
+        for column in table.columns:
+            self.assertIs(column._memo_values, _missing)
+
+        for row in table.rows:
+            self.assertIs(row._name_index, _missing)
+
+    def test_forked_table_does_not_share_column_caches(self):
+        table = Table(self.rows, self.column_names, self.column_types)
+        table.columns['one'].values()
+        table.rows[0]['one']
+
+        forked = table.where(lambda r: r['one'] is not None)
+
+        self.assertIs(forked.columns['one']._memo_values, _missing)
+        self.assertIs(forked.rows[0]._name_index, _missing)
+
+        # The shared rows still carry their own reusable lookups.
+        self.assertIsNot(table.rows[0]._name_index, _missing)
+
+    def test_order_by_result_is_independent(self):
+        table = Table(self.rows, self.column_names, self.column_types)
+        ordered = table.order_by('two')
+
+        self.assertIsNot(ordered.columns['two'], table.columns['two'])
+        self.assertIs(ordered.columns['two']._memo_values, _missing)
+
+        ordered.columns['two'].values()
+
+        self.assertIs(table.columns['two']._memo_values, _missing)
+
+    def test_row_name_lookups_are_reused_across_accesses(self):
+        table = Table(
+            self.rows, self.column_names, self.column_types,
+            row_names=('alpha', 'beta', 'gamma')
+        )
+
+        for _ in range(3):
+            self.assertEqual(table.rows['beta'].values(), table.rows[1].values())
+            self.assertEqual(table.columns['three']['alpha'], 'a')
+
+        self.assertIsNot(table.rows._name_index, _missing)
+        self.assertIsNot(table.columns['three']._name_index, _missing)
+
+    def test_pickle_roundtrip_resets_all_caches(self):
+        import pickle
+
+        table = Table(self.rows, self.column_names, self.column_types)
+        table.columns['one'].values()
+        table.columns['one'].values_sorted()
+        table.rows[0]['one']
+
+        restored = pickle.loads(pickle.dumps(table))
+
+        for column in restored.columns:
+            self.assertIs(column._memo_values, _missing)
+            self.assertIs(column._name_index, _missing)
+
+        for row in restored.rows:
+            self.assertIs(row._name_index, _missing)
+
+        self.assertRows(restored, self.rows)
+        self.assertEqual(restored.rows[0]['one'], table.rows[0]['one'])
+
+    def test_dict_mutation_does_not_affect_table(self):
+        table = Table(self.rows, self.column_names, self.column_types)
+
+        row_dict = table.rows[0].dict()
+        row_dict['one'] = 999
+
+        columns_dict = table.columns.dict()
+        columns_dict['one'] = 'tampered'
+
+        self.assertEqual(table.rows[0]['one'], Decimal('1'))
+        self.assertNotIn('tampered', table.columns.dict().values())
+        self.assertIsInstance(table.columns['one'], agate.Column)

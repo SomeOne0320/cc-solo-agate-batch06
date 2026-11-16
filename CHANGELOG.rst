@@ -11,6 +11,10 @@
 - fix: :meth:`.Table.join` accepts ``right_key`` as a sequence containing column indices, like ``[0, 1]``. Previously, it raised a ``ValueError``.
 - fix: :meth:`.Table.join`, if the right table has any columns with values identical to the ``right_key`` column, omits the ``right_key`` column from the output, instead of the first of the identical columns.
 - fix: :meth:`.Table.join`, with ``require_match=True`` and a composite key, raises a ``ValueError`` for an unmatched key, instead of a ``TypeError``.
+- perf: :meth:`.Column.values`, :meth:`.Column.values_distinct`, :meth:`.Column.values_without_nulls`, :meth:`.Column.values_sorted` and :meth:`.Column.values_without_nulls_sorted` now load the column's rows once, on first use, and reuse the prepared values for every later read. Repeated reads of a column (for example during validation, aggregation and export) now cost one pass over the rows instead of one pass per read, including for empty and null-only columns.
+- perf: name-based access on :class:`.MappedSequence` (rows, columns, and the rows/columns containers) now builds the name-to-index lookup once per object and reuses it for repeated key lookups, instead of rebuilding the full mapping for every field.
+- fix: the :func:`.memoize` decorator never stored its result, so "memoized" methods recomputed on every call. It now caches on the owning object using a sentinel that distinguishes uncomputed results from valid empty results. Caches live in object slots, are never shared between tables, columns, rows or forked tables, and are reset by pickling; mutating an externally supplied key list still changes subsequent name lookups.
+- fix: :meth:`.Column.values_sorted` and :meth:`.Column.values_without_nulls_sorted` still return fresh lists (and :meth:`.MappedSequence.dict` a fresh :class:`collections.OrderedDict`) on every call, so caller mutations cannot pollute later reads or the source table.
 
 1.14.2 - February 27, 2026
 --------------------------

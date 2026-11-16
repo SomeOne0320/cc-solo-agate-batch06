@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from agate import Table
 from agate.data_types import Number, Text
+from agate.utils import _missing
 
 
 class TestColumn(unittest.TestCase):
@@ -119,3 +120,87 @@ class TestColumn(unittest.TestCase):
             table.columns['one'].values_without_nulls_sorted(),
             [Decimal('1'), Decimal('2')]
         )
+
+    def test_values_are_prepared_once_and_reused(self):
+        column = self.table.columns['one']
+
+        first = column.values()
+        second = column.values()
+
+        self.assertIs(first, second)
+        self.assertIs(column._memo_values, first)
+
+    def test_index_access_reuses_prepared_values(self):
+        column = self.table.columns['one']
+        values = column.values()
+
+        for i in range(len(values)):
+            self.assertEqual(column[i], values[i])
+
+        self.assertIs(column.values(), values)
+
+    def test_empty_column_caches_empty_results(self):
+        table = Table([], self.column_names, self.column_types)
+        column = table.columns['one']
+
+        self.assertEqual(column.values(), ())
+        self.assertIs(column.values(), column.values())
+        self.assertEqual(column.values_without_nulls(), ())
+        self.assertIs(
+            column.values_without_nulls(),
+            column.values_without_nulls()
+        )
+
+    def test_columns_keep_separate_caches(self):
+        first = self.table.columns['one']
+        second = self.table.columns['two']
+
+        first.values()
+
+        self.assertIsNot(first._memo_values, _missing)
+        self.assertIs(second._memo_values, _missing)
+
+    def test_sorted_values_return_fresh_lists(self):
+        column = self.table.columns['one']
+        expected = column.values_sorted()
+
+        self.assertIsInstance(expected, list)
+
+        returned = column.values_sorted()
+        returned.reverse()
+        returned.append('junk')
+
+        self.assertEqual(column.values_sorted(), expected)
+        self.assertIsInstance(column._memo__values_sorted, tuple)
+
+        without_nulls = column.values_without_nulls_sorted()
+        without_nulls.append('junk')
+
+        self.assertEqual(
+            column.values_without_nulls_sorted(),
+            [Decimal('1'), Decimal('2')]
+        )
+
+    def test_pickle_clears_prepared_values(self):
+        column = self.table.columns['one']
+        column.values()
+        column.values_sorted()
+
+        restored = pickle.loads(pickle.dumps(column))
+
+        self.assertIs(restored._memo_values, _missing)
+        self.assertIs(restored._memo__values_sorted, _missing)
+        self.assertIs(restored._name_index, _missing)
+
+        self.assertSequenceEqual(restored.values(), column.values())
+        self.assertSequenceEqual(restored.values_sorted(), column.values_sorted())
+
+    def test_pickle_keeps_name_access_working(self):
+        table = Table(self.rows, self.column_names, self.column_types, row_names='three')
+        column = table.columns['one']
+        self.assertEqual(column['b'], Decimal('2'))
+
+        restored = pickle.loads(pickle.dumps(column))
+
+        self.assertEqual(restored['b'], Decimal('2'))
+        self.assertSequenceEqual(restored.dict(), column.dict())

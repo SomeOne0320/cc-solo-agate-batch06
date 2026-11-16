@@ -1,6 +1,8 @@
 import unittest
+from collections import OrderedDict
 
 from agate.mapped_sequence import MappedSequence
+from agate.utils import _missing
 
 
 class TestMappedSequence(unittest.TestCase):
@@ -103,6 +105,70 @@ class TestMappedSequence(unittest.TestCase):
             'two': 'b',
             'three': 'c'
         })
+
+    def test_dict_returns_fresh_copy(self):
+        first = self.row.dict()
+        first['one'] = 'mutated'
+        first['four'] = 'd'
+
+        second = self.row.dict()
+
+        self.assertIsNot(first, second)
+        self.assertEqual(second['one'], 'a')
+        self.assertNotIn('four', second)
+        self.assertEqual(self.row['one'], 'a')
+
+    def test_dict_duplicate_keys_keep_last_value(self):
+        row = MappedSequence(('a', 'b', 'c'), ('same', 'same', 'other'))
+
+        self.assertEqual(row['same'], 'b')
+        self.assertEqual(row.dict(), OrderedDict([('same', 'b'), ('other', 'c')]))
+
+    def test_name_lookup_is_built_once_and_reused(self):
+        row = MappedSequence(self.data, self.column_names)
+
+        self.assertIs(row._name_index, _missing)
+
+        for _ in range(5):
+            self.assertEqual(row['two'], 'b')
+            self.assertEqual(row.get('three'), 'c')
+
+        self.assertEqual(row._name_index, {'one': 0, 'two': 1, 'three': 2})
+
+    def test_mutated_external_keys_are_observed(self):
+        keys = ['one', 'two', 'three']
+        row = MappedSequence(self.data, keys)
+
+        self.assertEqual(row['two'], 'b')
+
+        keys[1] = 'renamed'
+
+        self.assertEqual(row['renamed'], 'b')
+
+        with self.assertRaises(KeyError):
+            row['two']
+
+    def test_pickle_clears_lookup_cache(self):
+        import pickle
+
+        self.row['one']
+        restored = pickle.loads(pickle.dumps(self.row))
+
+        self.assertIs(restored._name_index, _missing)
+        self.assertEqual(restored['one'], 'a')
+        self.assertIsNot(restored._name_index, _missing)
+
+    def test_no_keys_does_not_cache_a_lookup(self):
+        row = MappedSequence(self.data)
+
+        with self.assertRaises(KeyError):
+            row['one']
+
+        # get() swallows the KeyError and returns its default.
+        self.assertIsNone(row.get('one'))
+        self.assertEqual(row.get('one', 'fallback'), 'fallback')
+
+        self.assertIs(row._name_index, _missing)
 
     def test_dict_no_keys(self):
         row = MappedSequence(self.data)

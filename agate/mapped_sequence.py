@@ -7,7 +7,7 @@ rows and columns.
 from collections import OrderedDict
 from collections.abc import Sequence
 
-from agate.utils import memoize
+from agate.utils import _missing
 
 
 class MappedSequence(Sequence):
@@ -24,21 +24,28 @@ class MappedSequence(Sequence):
     :param keys:
         A sequence of keys.
     """
-    __slots__ = ['_values', '_keys']
+    __slots__ = ['_values', '_keys', '_name_index', '_name_index_signature']
 
     def __init__(self, values, keys=None):
         self._values = tuple(values)
+        self._keys = keys
 
-        if keys is not None:
-            self._keys = keys
-        else:
-            self._keys = None
+        # Lazily prepared name -> index lookup. Built on the first key-based
+        # access instead of up front, so sequences that are only read by index
+        # pay nothing. It lives on the object itself, so lookups prepared for
+        # one row/column can never leak into another one.
+        self._name_index = _missing
+        self._name_index_signature = _missing
 
     def __getstate__(self):
         """
         Return state values to be pickled.
 
         This is necessary on Python2.7 when using :code:`__slots__`.
+
+        Lookup caches are deliberately not serialized: after restoring, the
+        object must derive any name lookup from its restored ``_keys`` rather
+        than reuse a mapping built before the state was captured.
         """
         return {
             '_values': self._values,
@@ -53,6 +60,44 @@ class MappedSequence(Sequence):
         """
         self._values = data['_values']
         self._keys = data['_keys']
+        self._name_index = _missing
+        self._name_index_signature = _missing
+
+    def _get_name_index(self):
+        """
+        Return a mapping of each key to the index of its last occurrence,
+        preparing it only the first time it is needed.
+
+        The index is rebuilt if the externally supplied key sequence has been
+        replaced or mutated since the last preparation. Tuple keys (the kind
+        agate itself produces) take an identity-and-length fast path; other
+        sequences are compared by value, which still avoids rebuilding the
+        full mapping on repeated reads of the same row.
+        """
+        keys = self._keys
+
+        if keys is None:
+            raise KeyError
+
+        if isinstance(keys, tuple):
+            signature = (id(keys), len(keys))
+        else:
+            signature = tuple(keys)
+
+        if self._name_index is not _missing and self._name_index_signature == signature:
+            return self._name_index
+
+        name_index = {}
+
+        for i, key in enumerate(keys):
+            # Last occurrence wins, matching OrderedDict(zip(keys, values))
+            # when keys are duplicated.
+            name_index[key] = i
+
+        self._name_index = name_index
+        self._name_index_signature = signature
+
+        return name_index
 
     def __unicode__(self):
         """
@@ -85,7 +130,7 @@ class MappedSequence(Sequence):
         # Note: can't use isinstance because bool is a subclass of int
         elif type(key) is int:
             return self.values()[key]
-        return self.dict()[key]
+        return self.values()[self._get_name_index()[key]]
 
     def __setitem__(self, key, value):
         """
@@ -99,7 +144,6 @@ class MappedSequence(Sequence):
         """
         return iter(self.values())
 
-    @memoize
     def __len__(self):
         return len(self.values())
 
@@ -133,7 +177,6 @@ class MappedSequence(Sequence):
         """
         return self._values
 
-    @memoize
     def items(self):
         """
         Equivalent to :meth:`collections.OrderedDict.items`.
@@ -145,17 +188,20 @@ class MappedSequence(Sequence):
         Equivalent to :meth:`collections.OrderedDict.get`.
         """
         try:
-            return self.dict()[key]
+            return self.values()[self._get_name_index()[key]]
         except KeyError:
             if default:
                 return default
             return None
 
-    @memoize
     def dict(self):
         """
         Retrieve the contents of this sequence as an
         :class:`collections.OrderedDict`.
+
+        A fresh :class:`collections.OrderedDict` is returned on every call so
+        that callers can modify it without polluting later reads or the
+        underlying sequence.
         """
         if self.keys() is None:
             raise KeyError
